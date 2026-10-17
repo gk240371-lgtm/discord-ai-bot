@@ -1,8 +1,8 @@
 
 {
-  "name": "discord-ai-admin",
+  "name": "discord-ai-public",
   "version": "1.0.0",
-  "description": "Assistente de IA para personalizar servidores Discord",
+  "description": "Bot público de IA para personalização de servidores Discord",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
