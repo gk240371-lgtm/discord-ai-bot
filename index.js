@@ -12,26 +12,23 @@ const {
 
 const OpenAI = require("openai");
 
-const token = process.env.DISCORD_TOKEN;
-const appId = process.env.DISCORD_CLIENT_ID;
-const guildId = process.env.DISCORD_GUILD_ID;
-const apiKey = process.env.OPENAI_API_KEY;
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const API_KEY = process.env.OPENAI_API_KEY;
+const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-if (!token || !appId || !guildId || !apiKey) {
+if (!TOKEN || !CLIENT_ID || !API_KEY) {
   throw new Error(
-    "Configure DISCORD_TOKEN, DISCORD_CLIENT_ID, DISCORD_GUILD_ID e OPENAI_API_KEY."
+    "Configure DISCORD_TOKEN, DISCORD_CLIENT_ID e OPENAI_API_KEY."
   );
 }
-
-const openai = new OpenAI({ apiKey });
-const model = process.env.OPENAI_MODEL || "gpt-5.5";
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-// Permissões que a IA pode conceder a cargos.
-// Permissões administrativas e de gerenciamento ficam bloqueadas.
+const openai = new OpenAI({ apiKey: API_KEY });
+
 const ALLOWED_PERMISSIONS = {
   VerCanais: PermissionFlagsBits.ViewChannel,
   EnviarMensagens: PermissionFlagsBits.SendMessages,
@@ -47,24 +44,25 @@ const ALLOWED_PERMISSIONS = {
 const commands = [
   new SlashCommandBuilder()
     .setName("assistente")
-    .setDescription("Peça à IA para ajudar a personalizar o servidor")
+    .setDescription("Converse com a IA e personalize este servidor")
     .addStringOption(option =>
-      option.setName("pedido")
-        .setDescription("O que você quer fazer no servidor?")
+      option
+        .setName("pedido")
+        .setDescription("Escreva o que deseja fazer")
         .setRequired(true)
         .setMaxLength(1000)
     ),
 
   new SlashCommandBuilder()
     .setName("ajuda")
-    .setDescription("Mostra como usar o assistente")
+    .setDescription("Mostra os comandos do assistente")
 ].map(command => command.toJSON());
 
-const tools = [
+const aiTools = [
   {
     type: "function",
     name: "criar_categoria",
-    description: "Cria uma categoria no servidor.",
+    description: "Cria uma categoria no servidor atual.",
     strict: true,
     parameters: {
       type: "object",
@@ -99,7 +97,7 @@ const tools = [
   {
     type: "function",
     name: "criar_cargo",
-    description: "Cria um cargo sem permissões administrativas.",
+    description: "Cria um cargo sem permissões especiais.",
     strict: true,
     parameters: {
       type: "object",
@@ -114,7 +112,7 @@ const tools = [
   {
     type: "function",
     name: "editar_cargo",
-    description: "Altera nome e/ou cor de um cargo existente.",
+    description: "Muda o nome ou a cor de um cargo existente.",
     strict: true,
     parameters: {
       type: "object",
@@ -130,8 +128,7 @@ const tools = [
   {
     type: "function",
     name: "definir_permissoes_cargo",
-    description:
-      "Define as permissões permitidas de um cargo. A lista substitui as permissões anteriores.",
+    description: "Define permissões de uma lista limitada para um cargo.",
     strict: true,
     parameters: {
       type: "object",
@@ -152,66 +149,73 @@ const tools = [
 ];
 
 const instructions = `
-Você é um assistente especializado em personalização de servidores Discord.
-Responda em português brasileiro, com clareza.
-Entenda os pedidos e use as funções disponíveis quando a pessoa pedir
-uma alteração real no servidor.
-Se a pessoa só fizer uma pergunta, responda sem executar funções.
-Não invente que fez alterações se nenhuma função foi executada.
+Você é um assistente de IA para personalizar servidores Discord.
+Responda sempre em português brasileiro.
+Entenda pedidos escritos naturalmente.
+Use as funções quando o usuário solicitar alterações reais.
+Responda perguntas normalmente quando não for necessária uma alteração.
+Nunca diga que realizou uma ação se ela falhou.
+Use somente as funções disponíveis.
 Não peça nem revele tokens ou chaves secretas.
-Ao configurar permissões, use somente os nomes aceitos pelas funções.
-Nunca tente contornar as regras de autorização do bot.
+Não tente contornar as permissões do usuário ou do bot.
+Explique claramente os erros e os resultados das alterações.
 `;
 
-function cleanName(value, max = 90) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .slice(0, max);
+function cleanName(value) {
+  return String(value || "").trim().slice(0, 90);
+}
+
+function validateColor(color) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
+    throw new Error("Use uma cor hexadecimal, por exemplo #3498db.");
+  }
 }
 
 function findRole(guild, name) {
-  const query = name.trim().toLowerCase();
-  return guild.roles.cache.find(
-    role => role.name.toLowerCase() === query ||
-            role.id === name.trim()
-  );
-}
+  const value = name.trim().toLowerCase();
 
-function checkHex(color) {
-  if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
-    throw new Error("A cor precisa estar no formato #3498db.");
-  }
+  return guild.roles.cache.find(role =>
+    role.id === name.trim() ||
+    role.name.toLowerCase() === value
+  );
 }
 
 async function executeTool(name, args, guild) {
   if (name === "criar_categoria") {
     const nome = cleanName(args.nome);
+
     if (!nome) throw new Error("Nome inválido.");
 
-    const channel = await guild.channels.create({
+    const category = await guild.channels.create({
       name: nome,
       type: ChannelType.GuildCategory,
-      reason: "Solicitação do assistente de IA"
+      reason: "Solicitado pelo assistente de IA"
     });
 
-    return { sucesso: true, categoria: channel.name };
+    return {
+      sucesso: true,
+      mensagem: `Categoria ${category.name} criada.`
+    };
   }
 
   if (name === "criar_canal") {
     const nome = cleanName(args.nome);
+
     if (!nome) throw new Error("Nome inválido.");
 
     let parent = null;
+
     if (args.categoria) {
-      const category = guild.channels.cache.find(
-        channel =>
-          channel.type === ChannelType.GuildCategory &&
-          channel.name.toLowerCase() ===
-            args.categoria.trim().toLowerCase()
+      const category = guild.channels.cache.find(channel =>
+        channel.type === ChannelType.GuildCategory &&
+        channel.name.toLowerCase() ===
+          args.categoria.trim().toLowerCase()
       );
 
-      if (!category) throw new Error("Categoria não encontrada.");
+      if (!category) {
+        throw new Error("Categoria não encontrada.");
+      }
+
       parent = category.id;
     }
 
@@ -221,31 +225,38 @@ async function executeTool(name, args, guild) {
         ? ChannelType.GuildVoice
         : ChannelType.GuildText,
       parent,
-      reason: "Solicitação do assistente de IA"
+      reason: "Solicitado pelo assistente de IA"
     });
 
-    return { sucesso: true, canal: channel.name };
+    return {
+      sucesso: true,
+      mensagem: `Canal ${channel.name} criado.`
+    };
   }
 
   if (name === "criar_cargo") {
     const nome = cleanName(args.nome);
-    if (!nome) throw new Error("Nome inválido.");
+    const cor = args.cor || "#99AAB5";
 
-    const color = args.cor || "#99AAB5";
-    checkHex(color);
+    if (!nome) throw new Error("Nome inválido.");
+    validateColor(cor);
 
     const role = await guild.roles.create({
       name: nome,
-      color,
+      color: cor,
       permissions: [],
-      reason: "Solicitação do assistente de IA"
+      reason: "Solicitado pelo assistente de IA"
     });
 
-    return { sucesso: true, cargo: role.name, cor: color };
+    return {
+      sucesso: true,
+      mensagem: `Cargo ${role.name} criado na cor ${cor}.`
+    };
   }
 
   if (name === "editar_cargo") {
     const role = findRole(guild, args.cargo);
+
     if (!role) throw new Error("Cargo não encontrado.");
 
     if (role.managed || role.id === guild.id) {
@@ -259,55 +270,71 @@ async function executeTool(name, args, guild) {
     }
 
     if (args.cor) {
-      checkHex(args.cor);
+      validateColor(args.cor);
       changes.color = args.cor;
     }
 
     if (!Object.keys(changes).length) {
-      throw new Error("Informe um novo nome ou uma cor.");
+      throw new Error("Informe o novo nome ou a nova cor.");
     }
 
     await role.edit({
       ...changes,
-      reason: "Solicitação do assistente de IA"
+      reason: "Solicitado pelo assistente de IA"
     });
 
-    return { sucesso: true, cargo: role.name };
+    return {
+      sucesso: true,
+      mensagem: `Cargo atualizado: ${role.name}.`
+    };
   }
 
   if (name === "definir_permissoes_cargo") {
     const role = findRole(guild, args.cargo);
+
     if (!role) throw new Error("Cargo não encontrado.");
 
     if (role.managed || role.id === guild.id) {
-      throw new Error("Esse cargo não pode ser alterado.");
+      throw new Error("Esse cargo não pode ser editado.");
     }
 
     const permissions = args.permissoes.map(permission => {
       const flag = ALLOWED_PERMISSIONS[permission];
+
       if (flag === undefined) {
-        throw new Error("Permissão não permitida: " + permission);
+        throw new Error(`Permissão não permitida: ${permission}`);
       }
+
       return flag;
     });
 
     await role.setPermissions(
       new PermissionsBitField(permissions),
-      "Permissões solicitadas pelo assistente de IA"
+      "Solicitado pelo assistente de IA"
     );
 
     return {
       sucesso: true,
-      cargo: role.name,
-      permissoes: args.permissoes
+      mensagem:
+        `Permissões atualizadas para ${role.name}: ` +
+        (args.permissoes.join(", ") || "nenhuma permissão da lista")
     };
   }
 
-  throw new Error("Função desconhecida.");
+  throw new Error("Ação não reconhecida.");
 }
 
 client.once("ready", () => {
-  console.log(`Bot conectado como ${client.user.tag}`);
+  console.log(`Bot online: ${client.user.tag}`);
+  console.log(`Servidores conectados: ${client.guilds.cache.size}`);
+});
+
+client.on("guildCreate", guild => {
+  console.log(`Bot adicionado ao servidor: ${guild.name} (${guild.id})`);
+});
+
+client.on("guildDelete", guild => {
+  console.log(`Bot removido do servidor: ${guild.id}`);
 });
 
 client.on("interactionCreate", async interaction => {
@@ -317,8 +344,13 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({
       ephemeral: true,
       content:
-        "Use `/assistente pedido:` e escreva o que deseja. " +
-        "Exemplo: criar uma categoria EVENTOS e um canal avisos nela."
+        "Use `/assistente pedido:` para conversar com a IA.\n\n" +
+        "Exemplos:\n" +
+        "• Cria uma categoria EVENTOS.\n" +
+        "• Cria um canal avisos na categoria EVENTOS.\n" +
+        "• Cria um cargo VIP azul.\n" +
+        "• Muda a cor do cargo VIP para roxo.\n" +
+        "• Como posso organizar meu servidor?"
     });
   }
 
@@ -327,37 +359,38 @@ client.on("interactionCreate", async interaction => {
   await interaction.deferReply();
 
   try {
-    // Somente membros com Gerenciar Servidor podem usar a IA
-    // para executar pedidos. Perguntas comuns também exigem isso.
+    if (!interaction.guild) {
+      return interaction.editReply(
+        "Use este comando dentro de um servidor Discord."
+      );
+    }
+
     if (!interaction.memberPermissions?.has(
       PermissionFlagsBits.ManageGuild
     )) {
       return interaction.editReply(
-        "Você precisa da permissão **Gerenciar Servidor** para usar este assistente."
+        "Você precisa da permissão **Gerenciar Servidor** " +
+        "para utilizar o assistente."
       );
     }
 
     const guild = interaction.guild;
-    if (!guild) {
-      return interaction.editReply("Use esse comando dentro de um servidor.");
-    }
-
     const botMember = await guild.members.fetchMe();
 
     const prompt = interaction.options.getString("pedido", true);
 
     let response = await openai.responses.create({
-      model,
+      model: MODEL,
       instructions,
       input: prompt,
-      tools,
-      max_output_tokens: 700
+      tools: aiTools,
+      max_output_tokens: 800
     });
 
     let executed = 0;
+    const results = [];
 
-    // Limite de rodadas para evitar ciclos intermináveis.
-    for (let round = 0; round < 3; round++) {
+    for (let round = 0; round < 4; round++) {
       const calls = response.output.filter(
         item => item.type === "function_call"
       );
@@ -372,8 +405,7 @@ client.on("interactionCreate", async interaction => {
         try {
           const args = JSON.parse(call.arguments);
 
-          // Verifica a permissão necessária antes de cada ação.
-          const needed = {
+          const requiredPermission = {
             criar_categoria: PermissionFlagsBits.ManageChannels,
             criar_canal: PermissionFlagsBits.ManageChannels,
             criar_cargo: PermissionFlagsBits.ManageRoles,
@@ -381,14 +413,28 @@ client.on("interactionCreate", async interaction => {
             definir_permissoes_cargo: PermissionFlagsBits.ManageRoles
           }[call.name];
 
-          if (!needed || !botMember.permissions.has(needed)) {
-            throw new Error("O bot não tem a permissão necessária.");
+          if (
+            requiredPermission === undefined ||
+            !botMember.permissions.has(requiredPermission)
+          ) {
+            throw new Error(
+              "O bot não possui a permissão necessária."
+            );
           }
 
           result = await executeTool(call.name, args, guild);
-          executed++;
+
+          if (result.sucesso) {
+            executed++;
+            results.push(result.mensagem);
+          }
         } catch (error) {
-          result = { sucesso: false, erro: error.message };
+          result = {
+            sucesso: false,
+            erro: error.message || "Erro ao executar a ação."
+          };
+
+          results.push(`Falha: ${result.erro}`);
         }
 
         outputs.push({
@@ -399,46 +445,53 @@ client.on("interactionCreate", async interaction => {
       }
 
       response = await openai.responses.create({
-        model,
+        model: MODEL,
         instructions,
         previous_response_id: response.id,
         input: outputs,
-        tools,
-        max_output_tokens: 700
+        tools: aiTools,
+        max_output_tokens: 800
       });
     }
 
-    let answer = response.output_text || "Pedido processado.";
-    if (answer.length > 1900) {
-      answer = answer.slice(0, 1900) + "...";
+    let answer = response.output_text || "Pedido analisado.";
+
+    if (results.length) {
+      answer += "\n\n**Resultado das ações:**\n" +
+        results.map(item => `• ${item}`).join("\n");
     }
 
-    if (executed > 0) {
-      answer += "\n\nAlterações executadas: " + executed + ".";
+    if (answer.length > 1900) {
+      answer = answer.slice(0, 1900) + "...";
     }
 
     await interaction.editReply(answer);
   } catch (error) {
     console.error("Erro no assistente:", error);
+
     await interaction.editReply(
-      "Não consegui concluir o pedido. Confira as variáveis, " +
-      "as permissões do bot e os logs do Railway."
+      "Não consegui concluir o pedido. Confira as chaves, " +
+      "as permissões e os logs do Railway."
     );
   }
 });
 
 async function start() {
-  const rest = new REST({ version: "10" }).setToken(token);
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
 
+  // REGISTRO GLOBAL: não usa ID de servidor.
   await rest.put(
-    Routes.applicationGuildCommands(appId, guildId),
+    Routes.applicationCommands(CLIENT_ID),
     { body: commands }
   );
 
-  await client.login(token);
+  console.log("Comandos globais registrados.");
+
+  await client.login(TOKEN);
 }
 
 start().catch(error => {
-  console.error("Falha ao iniciar:", error);
+  console.error("Erro ao iniciar o bot:", error);
   process.exit(1);
 });
+        
